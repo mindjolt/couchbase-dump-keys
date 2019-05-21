@@ -1,0 +1,61 @@
+#!/usr/bin/python
+from ansible.module_utils.basic import *
+import glob
+import os
+import re
+import subprocess
+
+
+def main():
+    fields = dict(
+        src=dict(required=True, type="str"),
+        dest=dict(required=True, type="str")
+    )
+    module = AnsibleModule(argument_spec=fields)
+    changed, result = dump(**module.params)
+    module.exit_json(changed=changed, **result)
+
+
+def dump(src, dest):
+    vbuckets = gather_vbuckets(src)
+    files = []
+    tmp_path = os.path.join(dest, 'temp.json.gz')
+    changed = False
+    for vbucket in vbuckets:
+        dump_path = os.path.join(dest, 'vb%04d.json.gz' % vbucket)
+        files.append(dump_path)
+        if os.path.exists(dump_path):
+            continue
+        db_path = couchdb_path(src, vbucket)
+        # Strip all non-json lines
+        # Strip all tombstones
+        cmd = ('/opt/couchbase/bin/couch_dbdump --byid --json --no-body %s |'
+               'grep ^{ |grep -vF \'"deleted":true\' |gzip >%s' % (db_path, tmp_path))
+        subprocess.check_call(cmd, shell=True)
+        os.rename(tmp_path, dump_path)
+        changed = True
+    return changed, dict(files=files)
+
+
+def couchdb_path(path, vbucket):
+    regex = re.compile(r'%s\.couch\.(\d+)' % vbucket)
+    n = sorted((int(m.group(1))
+                for m in (regex.match(n)
+                          for n in os.listdir(path))
+                if m), reverse=True)[0]
+    if n is None:
+        raise Exception("Unable to locate file for vbucket %s" % vbucket)
+    return os.path.join(path, '%s.couch.%s' % (vbucket, n))
+
+
+
+RE_COUCHDB_FILE = re.compile(r'^(\d+)\.couch\.(\d+)$')
+def gather_vbuckets(path):
+    return sorted(int(m.group(1))
+                  for m in (RE_COUCHDB_FILE.match(n)
+                            for n in os.listdir(path))
+                  if m)
+
+
+if __name__ == '__main__':  
+    main()
